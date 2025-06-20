@@ -13,10 +13,11 @@ import java.util.concurrent.TimeUnit;
 import services.EmailService;
 
 /**
- * Simplified Automatic Reservation Cancellation Service
- * 15-minute rule: If a customer with "preorder" status is late by more than 15 minutes,
- * their reservation is automatically cancelled and the spot becomes available.
- * Updated to work with unified parkinginfo table structure
+ * Enhanced Automatic Service for:
+ * 1. Reservation Cancellation (15-minute rule for preorders)
+ * 2. Late Pickup Monitoring (15-minute rule for active parkings)
+ * 
+ * Runs every minute to check both conditions and send email notifications
  */
 public class SimpleAutoCancellationService {
     
@@ -31,31 +32,36 @@ public class SimpleAutoCancellationService {
     }
     
     /**
-     * Start the automatic cancellation service
-     * Runs every minute to check for late preorder reservations
+     * Start the automatic monitoring service
+     * Runs every minute to check for:
+     * 1. Late preorder reservations (auto-cancel)
+     * 2. Late active parkings (mark as late and notify)
      */
     public void startService() {
         if (isRunning) {
-            System.out.println("Auto-cancellation service is already running");
+            System.out.println("Auto-monitoring service is already running");
             return;
         }
         
         isRunning = true;
-        System.out.println("Starting automatic reservation cancellation service...");
-        System.out.println("Checking for late preorder reservations every minute (15+ min late = auto-cancel)");
+        System.out.println("Starting automatic monitoring service...");
+        System.out.println("Checking every minute for:");
+        System.out.println("  - Late preorder reservations (15+ min late = auto-cancel)");
+        System.out.println("  - Late active parkings (15+ min late = notify customer)");
         
         // Schedule to run every minute
         scheduler.scheduleAtFixedRate(() -> {
             try {
                 checkAndCancelLatePreorders();
+                checkAndNotifyLatePickups();
             } catch (Exception e) {
-                System.err.println("Error in auto-cancellation service: " + e.getMessage());
+                System.err.println("Error in auto-monitoring service: " + e.getMessage());
             }
         }, 0, 1, TimeUnit.MINUTES);
     }
     
     /**
-     * Stop the automatic cancellation service
+     * Stop the automatic monitoring service
      */
     public void stopService() {
         if (!isRunning) {
@@ -64,12 +70,11 @@ public class SimpleAutoCancellationService {
         
         isRunning = false;
         scheduler.shutdown();
-        System.out.println("Auto-cancellation service stopped");
+        System.out.println("Auto-monitoring service stopped");
     }
     
     /**
-     * Main method that checks for and cancels late preorder reservations
-     * NOW WITH EMAIL NOTIFICATIONS
+     * Check for and cancel late preorder reservations
      */
     private void checkAndCancelLatePreorders() {
         String query = """
@@ -109,7 +114,7 @@ public class SimpleAutoCancellationService {
                     if (cancelLateReservation(reservationCode, spotId)) {
                         cancelledCount++;
                         
-                        // SEND EMAIL NOTIFICATION for auto-cancellation
+                        // Send email notification for auto-cancellation
                         if (userEmail != null && fullName != null) {
                             EmailService.sendReservationCancelled(userEmail, fullName, String.valueOf(reservationCode));
                         }
@@ -123,8 +128,8 @@ public class SimpleAutoCancellationService {
                 
                 if (cancelledCount > 0) {
                     System.out.println(String.format(
-                        "Auto-cancellation completed: %d preorder reservations cancelled, %d spots freed, %d emails sent",
-                        cancelledCount, cancelledCount, cancelledCount
+                        "[%s] Auto-cancellation: %d preorder reservations cancelled",
+                        getCurrentTimestamp(), cancelledCount
                     ));
                 }
             }
@@ -134,62 +139,135 @@ public class SimpleAutoCancellationService {
     }
     
     /**
-     * Cancel a specific late preorder reservation and free up the parking spot
+     * NEW METHOD: Check for late pickups in active parkings and send notifications
+     */
+    private void checkAndNotifyLatePickups() {
+        String query = """
+            SELECT 
+                pi.ParkingInfo_ID,
+                pi.User_ID,
+                pi.ParkingSpot_ID,
+                u.UserName,
+                u.Email,
+                u.Name,
+                u.Phone,
+                TIMESTAMPDIFF(MINUTE, pi.Estimated_end_time, NOW()) as minutes_late,
+                pi.Estimated_end_time,
+                pi.IsLate
+            FROM parkinginfo pi
+            JOIN users u ON pi.User_ID = u.User_ID
+            WHERE pi.statusEnum = 'active'
+            AND pi.Actual_end_time IS NULL
+            AND pi.Estimated_end_time IS NOT NULL
+            AND TIMESTAMPDIFF(MINUTE, pi.Estimated_end_time, NOW()) >= ?
+            AND pi.IsLate = 'no'
+            """;
+        
+        try (PreparedStatement stmt = parkingController.getConnection().prepareStatement(query)) {
+            stmt.setInt(1, LATE_THRESHOLD_MINUTES);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                int notifiedCount = 0;
+                
+                while (rs.next()) {
+                    int parkingInfoId = rs.getInt("ParkingInfo_ID");
+                    String userName = rs.getString("UserName");
+                    String userEmail = rs.getString("Email");
+                    String fullName = rs.getString("Name");
+                    int spotId = rs.getInt("ParkingSpot_ID");
+                    int minutesLate = rs.getInt("minutes_late");
+                    
+                    if (markAsLateAndNotify(parkingInfoId, userEmail, fullName)) {
+                        notifiedCount++;
+                        
+                        System.out.println(String.format(
+                            "⏰ LATE PICKUP: Parking %d for %s (Spot %d) - %d minutes late - Email sent",
+                            parkingInfoId, userName, spotId, minutesLate
+                        ));
+                    }
+                }
+                
+                if (notifiedCount > 0) {
+                    System.out.println(String.format(
+                        "[%s] Late pickup monitoring: %d customers notified",
+                        getCurrentTimestamp(), notifiedCount
+                    ));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Database error during late pickup check: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Mark parking as late and send email notification
+     */
+    private boolean markAsLateAndNotify(int parkingInfoId, String userEmail, String fullName) {
+        Connection conn = parkingController.getConnection();
+        
+        try {
+            // Update IsLate to 'yes'
+            String updateQuery = """
+                UPDATE parkinginfo 
+                SET IsLate = 'yes'
+                WHERE ParkingInfo_ID = ? AND statusEnum = 'active' AND IsLate = 'no'
+                """;
+            
+            int updated = 0;
+            try (PreparedStatement stmt = conn.prepareStatement(updateQuery)) {
+                stmt.setInt(1, parkingInfoId);
+                updated = stmt.executeUpdate();
+            }
+            
+            if (updated > 0) {
+                // Send late pickup email notification
+                if (userEmail != null && fullName != null) {
+                    EmailService.sendLatePickupNotification(userEmail, fullName);
+                }
+                return true;
+            }
+            return false;
+            
+        } catch (SQLException e) {
+            System.err.println("Error marking parking as late: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Cancel a specific late preorder reservation
+     * NOTE: Preorder reservations don't set isOccupied=true, so no need to update parkingspot table
      */
     private boolean cancelLateReservation(int reservationCode, int spotId) {
         Connection conn = parkingController.getConnection();
         
         try {
-            conn.setAutoCommit(false);
-            
-            // 1. Cancel the reservation (change status from preorder to cancelled)
+            // Cancel the reservation (change status from preorder to cancelled)
             String cancelQuery = """
                 UPDATE parkinginfo 
                 SET statusEnum = 'cancelled'
                 WHERE ParkingInfo_ID = ? AND statusEnum = 'preorder'
                 """;
             
-            int updatedReservations = 0;
             try (PreparedStatement stmt = conn.prepareStatement(cancelQuery)) {
                 stmt.setInt(1, reservationCode);
-                updatedReservations = stmt.executeUpdate();
+                int updatedReservations = stmt.executeUpdate();
+                
+                if (updatedReservations > 0) {
+                    // Note: We don't need to update parkingspot.isOccupied because
+                    // preorder reservations don't mark the spot as occupied
+                    // Only active parkings set isOccupied=true
+                    System.out.println("Preorder reservation " + reservationCode + 
+                                     " cancelled. Spot " + spotId + " remains available for others.");
+                    return true;
+                }
             }
-            
-            if (updatedReservations == 0) {
-                conn.rollback();
-                return false; // Reservation was already cancelled or doesn't exist
-            }
-            
-            // 2. Free up the parking spot
-            String freeSpotQuery = """
-                UPDATE parkingspot 
-                SET isOccupied = FALSE 
-                WHERE ParkingSpot_ID = ?
-                """;
-            
-            try (PreparedStatement stmt = conn.prepareStatement(freeSpotQuery)) {
-                stmt.setInt(1, spotId);
-                stmt.executeUpdate();
-            }
-            
-            conn.commit();
-            return true;
             
         } catch (SQLException e) {
-            try {
-                conn.rollback();
-            } catch (SQLException rollbackEx) {
-                System.err.println("Failed to rollback transaction: " + rollbackEx.getMessage());
-            }
             System.err.println("Failed to cancel reservation " + reservationCode + ": " + e.getMessage());
-            return false;
-        } finally {
-            try {
-                conn.setAutoCommit(true);
-            } catch (SQLException e) {
-                System.err.println("Failed to reset auto-commit: " + e.getMessage());
-            }
         }
+        
+        return false;
     }
     
     /**

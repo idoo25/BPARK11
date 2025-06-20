@@ -21,7 +21,7 @@ import server.ServerUI;
 
 /**
  * ServerPortFrame provides the GUI interface for managing the ParkB server.
- * Now includes auto-cancellation service status display.
+ * Now includes enhanced monitoring service status display.
  */
 public class ServerPortFrame extends Application {
     public static String str = "";
@@ -74,7 +74,7 @@ public class ServerPortFrame extends Application {
                     controller.serverip.setText(ParkingServer.serverIp);
                     controller.textMessage.setText("ParkB Server Running Successfully!");
                     
-                    // Show connection info with auto-cancellation status
+                    // Show connection info with enhanced monitoring status
                     showSystemInfo();
                 } else {
                     controller.textMessage.setText("Database connection failed! Check MySQL server.");
@@ -92,10 +92,10 @@ public class ServerPortFrame extends Application {
     public void getExitBtn(ActionEvent event) throws Exception {
         System.out.println("Shutting down ParkB Server");
         
-        // Shutdown server gracefully including auto-cancellation service
+        // Shutdown server gracefully including enhanced monitoring service
         if (ParkingServer.parkingController != null) {
             ParkingServer.parkingController.shutdown();
-            System.out.println("Auto-cancellation service stopped during shutdown");
+            System.out.println("Auto-monitoring service stopped during shutdown");
         }
         
         System.exit(0);
@@ -128,7 +128,7 @@ public class ServerPortFrame extends Application {
 
     /**
      * Shows system information when server starts successfully
-     * UPDATED: Now includes auto-cancellation service status
+     * UPDATED: Now includes enhanced monitoring service status
      */
     private void showSystemInfo() {
         Platform.runLater(() -> {
@@ -140,16 +140,21 @@ public class ServerPortFrame extends Application {
             systemInfo += "Port: " + ParkingServer.DEFAULT_PORT + "\n";
             systemInfo += "Parking Spots: 100 (Auto-initialized)\n";
             
-            // Add auto-cancellation status
-            systemInfo += "Auto-Cancellation: ACTIVE (15-min rule)\n";
-            systemInfo += "Reservation Flow: preorder → active → finished\n";
-            systemInfo += "Late Policy: Auto-cancel after 15 minutes\n";
+            // Add enhanced monitoring status
+            systemInfo += "\n=== AUTO-MONITORING SERVICE ACTIVE ===\n";
+            systemInfo += "✅ Pre-order Cancellation: 15-min rule\n";
+            systemInfo += "✅ Late Pickup Detection: 15-min rule\n";
+            systemInfo += "• Checking every minute for violations\n";
+            systemInfo += "• Auto-cancel late arrivals (preorder)\n";
+            systemInfo += "• Auto-notify late pickups (active)\n";
+            systemInfo += "• Email notifications sent automatically\n";
             
-            systemInfo += "Auto-start: SUCCESS\n";
+            systemInfo += "\nAuto-start: SUCCESS\n";
             systemInfo += "Status: Ready to accept client connections\n";
             systemInfo += "================================\n\n";
-            systemInfo += "Monitor console for auto-cancellation messages:\n";
-            systemInfo += "✅ AUTO-CANCELLED: Reservation X for UserY\n\n";
+            systemInfo += "Monitor console for automated actions:\n";
+            systemInfo += "✅ AUTO-CANCELLED: Reservation X for UserY\n";
+            systemInfo += "⏰ LATE PICKUP: Parking X for UserY\n\n";
             systemInfo += "Waiting for clients to connect...\n";
             
             if (controller != null && controller.txtClientConnection != null) {

@@ -44,6 +44,22 @@ public class ClientMessageHandler {
                 handleParkingHistory(message);
                 break;
                 
+            case ENTER_PARKING_RESPONSE:
+                handleEnterParkingResponse(message);
+                break;
+                
+            case EXIT_PARKING_RESPONSE:
+                handleExitParkingResponse(message);
+                break;
+                
+            case EXTEND_PARKING_RESPONSE:
+                handleExtendParkingResponse(message);
+                break;
+                
+            case USERNAME_RESPONSE:
+                handleUsernameResponse(message);
+                break;
+                
             case MANAGER_SEND_REPORTS:
                 handleReports(message);
                 break;
@@ -62,6 +78,34 @@ public class ClientMessageHandler {
                 
             case CANCELLATION_RESPONSE:
                 handleCancellationResponse(message);
+                break;
+                
+            case MANAGER_LOGIN_RESPONSE:
+                handleManagerLoginResponse(message);
+                break;
+                
+            case MONTHLY_REPORTS_RESPONSE:
+                handleMonthlyReportsResponse(message);
+                break;
+                
+            case TIME_SLOTS_RESPONSE:
+                handleTimeSlotsResponse(message);
+                break;
+                
+            case PREBOOKING_RESPONSE:
+                handlePrebookingResponse(message);
+                break;
+                
+            case SPONTANEOUS_RESPONSE:
+                handleSpontaneousResponse(message);
+                break;
+                
+            case EXTENSION_RESPONSE:
+                handleExtensionResponse(message);
+                break;
+                
+            case SYSTEM_STATUS_RESPONSE:
+                handleSystemStatusResponse(message);
                 break;
                 
             default:
@@ -100,6 +144,22 @@ public class ClientMessageHandler {
                 
             case "reservationResult":
                 showAlert("Reservation", data);
+                break;
+                
+            case "extendResult":
+                showAlert("Parking Extension", data);
+                break;
+                
+            case "cancelResult":
+                showAlert("Cancellation", data);
+                break;
+                
+            case "reports":
+                showAlert("Reports", data);
+                break;
+                
+            case "error":
+                showAlert("Error", data);
                 break;
                 
             default:
@@ -165,6 +225,39 @@ public class ClientMessageHandler {
         System.out.println("Received " + history.size() + " parking records");
     }
     
+    private static void handleEnterParkingResponse(Message message) {
+        String response = (String) message.getContent();
+        if (response.contains("successful")) {
+            showAlert("Parking Entry Success", response);
+        } else {
+            showAlert("Parking Entry Failed", response);
+        }
+    }
+    
+    private static void handleExitParkingResponse(Message message) {
+        String response = (String) message.getContent();
+        if (response.contains("successful")) {
+            showAlert("Parking Exit Success", response);
+        } else {
+            showAlert("Parking Exit Failed", response);
+        }
+    }
+    
+    private static void handleExtendParkingResponse(Message message) {
+        String response = (String) message.getContent();
+        if (response.contains("extended")) {
+            showAlert("Parking Extension Success", response);
+        } else {
+            showAlert("Parking Extension Failed", response);
+        }
+    }
+    
+    private static void handleUsernameResponse(Message message) {
+        String generatedUsername = (String) message.getContent();
+        // This would typically update a text field in the UI
+        showAlert("Username Generated", "Suggested username: " + generatedUsername);
+    }
+    
     @SuppressWarnings("unchecked")
     private static void handleReports(Message message) {
         ArrayList<ParkingReport> reports = (ArrayList<ParkingReport>) message.getContent();
@@ -196,6 +289,49 @@ public class ClientMessageHandler {
     private static void handleCancellationResponse(Message message) {
         String response = (String) message.getContent();
         showAlert("Reservation Cancellation", response);
+    }
+    
+    private static void handleManagerLoginResponse(Message message) {
+        ParkingSubscriber manager = (ParkingSubscriber) message.getContent();
+        if (manager != null && "mng".equals(manager.getUserType())) {
+            BParkClientApp.setCurrentUser(manager.getSubscriberCode());
+            BParkClientApp.setUserType(manager.getUserType());
+            BParkClientApp.switchToMainScreen(manager.getUserType());
+        } else {
+            showAlert("Login Failed", "Invalid manager credentials");
+        }
+    }
+    
+    @SuppressWarnings("unchecked")
+    private static void handleMonthlyReportsResponse(Message message) {
+        ArrayList<ParkingReport> monthlyReports = (ArrayList<ParkingReport>) message.getContent();
+        System.out.println("Received " + monthlyReports.size() + " monthly reports");
+        showAlert("Monthly Reports", "Generated " + monthlyReports.size() + " monthly reports");
+    }
+    
+    private static void handleTimeSlotsResponse(Message message) {
+        String response = (String) message.getContent();
+        showAlert("Time Slots", response);
+    }
+    
+    private static void handlePrebookingResponse(Message message) {
+        String response = (String) message.getContent();
+        showAlert("Pre-booking", response);
+    }
+    
+    private static void handleSpontaneousResponse(Message message) {
+        String response = (String) message.getContent();
+        showAlert("Spontaneous Parking", response);
+    }
+    
+    private static void handleExtensionResponse(Message message) {
+        String response = (String) message.getContent();
+        showAlert("Extension Request", response);
+    }
+    
+    private static void handleSystemStatusResponse(Message message) {
+        String response = (String) message.getContent();
+        showAlert("System Status", response);
     }
     
     // String message handlers (legacy)
@@ -252,6 +388,19 @@ public class ClientMessageHandler {
     private static void showAlert(String title, String content) {
         Platform.runLater(() -> {
             Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle(title);
+            alert.setHeaderText(null);
+            alert.setContentText(content);
+            alert.showAndWait();
+        });
+    }
+    
+    /**
+     * Show error alert dialog
+     */
+    private static void showErrorAlert(String title, String content) {
+        Platform.runLater(() -> {
+            Alert alert = new Alert(Alert.AlertType.ERROR);
             alert.setTitle(title);
             alert.setHeaderText(null);
             alert.setContentText(content);

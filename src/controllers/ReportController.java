@@ -22,7 +22,7 @@ public class ReportController {
     public int successFlag;
 
     public ReportController(String dbname, String pass) {
-        String connectPath = "jdbc:mysql://localhost/" + dbname + "?serverTimezone=IST";
+        String connectPath = "jdbc:mysql://localhost/" + dbname + "?serverTimezone=Asia/Jerusalem";
         connectToDB(connectPath, pass);
     }
 
