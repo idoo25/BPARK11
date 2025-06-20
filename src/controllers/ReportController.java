@@ -5,8 +5,9 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 
@@ -14,7 +15,7 @@ import entities.ParkingReport;
 
 /**
  * ReportController handles report generation for the ParkB parking management system.
- * Generates parking time reports and subscriber status reports as specified in the requirements.
+ * Updated to work with unified parkinginfo table structure
  */
 public class ReportController {
     protected Connection conn;
@@ -127,12 +128,13 @@ public class ReportController {
             SELECT 
                 COUNT(*) as total_parkings,
                 AVG(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, NOW()))) as avg_duration,
-                SUM(IsLate) as late_exits,
-                SUM(IsExtended) as extensions,
+                SUM(CASE WHEN IsLate = 'yes' THEN 1 ELSE 0 END) as late_exits,
+                SUM(CASE WHEN IsExtended = 'yes' THEN 1 ELSE 0 END) as extensions,
                 MIN(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, NOW()))) as min_duration,
                 MAX(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, NOW()))) as max_duration
-            FROM ParkingInfo 
-            WHERE Date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            FROM parkinginfo 
+            WHERE statusEnum IN ('active', 'finished')
+            AND Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
             """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
@@ -160,21 +162,31 @@ public class ReportController {
         ParkingReport report = new ParkingReport("SUBSCRIBER_STATUS", LocalDate.now());
         
         // Get active subscribers count
-        String activeSubQry = "SELECT COUNT(DISTINCT User_ID) as active_subscribers FROM ParkingInfo WHERE Date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)";
+        String activeSubQry = """
+            SELECT COUNT(DISTINCT User_ID) as active_subscribers 
+            FROM parkinginfo 
+            WHERE Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            """;
         
         // Get total orders, reservations, and immediate entries
         String ordersQry = """
             SELECT 
                 COUNT(*) as total_orders,
-                SUM(CASE WHEN IsOrderedEnum = 'ordered' THEN 1 ELSE 0 END) as reservations,
-                SUM(CASE WHEN IsOrderedEnum = 'not ordered' THEN 1 ELSE 0 END) as immediate_entries,
+                SUM(CASE WHEN IsOrderedEnum = 'yes' THEN 1 ELSE 0 END) as reservations,
+                SUM(CASE WHEN IsOrderedEnum = 'no' THEN 1 ELSE 0 END) as immediate_entries,
                 AVG(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, NOW()))) as avg_session_duration
-            FROM ParkingInfo 
-            WHERE Date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            FROM parkinginfo 
+            WHERE Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            AND statusEnum IN ('active', 'finished')
             """;
         
         // Get cancelled reservations
-        String cancelledQry = "SELECT COUNT(*) as cancelled_reservations FROM Reservations WHERE statusEnum = 'cancelled' AND Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)";
+        String cancelledQry = """
+            SELECT COUNT(*) as cancelled_reservations 
+            FROM parkinginfo 
+            WHERE statusEnum = 'cancelled' 
+            AND Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            """;
         
         try {
             // Get active subscribers
@@ -224,12 +236,13 @@ public class ReportController {
             SELECT 
                 COUNT(*) as total_parkings,
                 AVG(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, Estimated_end_time))) as avg_duration,
-                SUM(IsLate) as late_exits,
-                SUM(IsExtended) as extensions,
+                SUM(CASE WHEN IsLate = 'yes' THEN 1 ELSE 0 END) as late_exits,
+                SUM(CASE WHEN IsExtended = 'yes' THEN 1 ELSE 0 END) as extensions,
                 MIN(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, Estimated_end_time))) as min_duration,
                 MAX(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, Estimated_end_time))) as max_duration
-            FROM ParkingInfo 
-            WHERE YEAR(Date) = ? AND MONTH(Date) = ?
+            FROM parkinginfo 
+            WHERE YEAR(Date_Of_Placing_Order) = ? AND MONTH(Date_Of_Placing_Order) = ?
+            AND statusEnum IN ('active', 'finished')
             """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
@@ -262,21 +275,31 @@ public class ReportController {
         ParkingReport report = new ParkingReport("SUBSCRIBER_STATUS", reportDate);
         
         // Get active subscribers for the month
-        String activeSubQry = "SELECT COUNT(DISTINCT User_ID) as active_subscribers FROM ParkingInfo WHERE YEAR(Date) = ? AND MONTH(Date) = ?";
+        String activeSubQry = """
+            SELECT COUNT(DISTINCT User_ID) as active_subscribers 
+            FROM parkinginfo 
+            WHERE YEAR(Date_Of_Placing_Order) = ? AND MONTH(Date_Of_Placing_Order) = ?
+            """;
         
         // Get monthly order statistics
         String ordersQry = """
             SELECT 
                 COUNT(*) as total_orders,
-                SUM(CASE WHEN IsOrderedEnum = 'ordered' THEN 1 ELSE 0 END) as reservations,
-                SUM(CASE WHEN IsOrderedEnum = 'not ordered' THEN 1 ELSE 0 END) as immediate_entries,
+                SUM(CASE WHEN IsOrderedEnum = 'yes' THEN 1 ELSE 0 END) as reservations,
+                SUM(CASE WHEN IsOrderedEnum = 'no' THEN 1 ELSE 0 END) as immediate_entries,
                 AVG(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, Estimated_end_time))) as avg_session_duration
-            FROM ParkingInfo 
-            WHERE YEAR(Date) = ? AND MONTH(Date) = ?
+            FROM parkinginfo 
+            WHERE YEAR(Date_Of_Placing_Order) = ? AND MONTH(Date_Of_Placing_Order) = ?
+            AND statusEnum IN ('active', 'finished')
             """;
         
         // Get cancelled reservations for the month
-        String cancelledQry = "SELECT COUNT(*) as cancelled_reservations FROM Reservations WHERE statusEnum = 'cancelled' AND YEAR(Date_Of_Placing_Order) = ? AND MONTH(Date_Of_Placing_Order) = ?";
+        String cancelledQry = """
+            SELECT COUNT(*) as cancelled_reservations 
+            FROM parkinginfo 
+            WHERE statusEnum = 'cancelled' 
+            AND YEAR(Date_Of_Placing_Order) = ? AND MONTH(Date_Of_Placing_Order) = ?
+            """;
         
         try {
             // Get active subscribers
@@ -328,7 +351,7 @@ public class ReportController {
      * Stores monthly reports in the database
      */
     private void storeMonthlyReports(ArrayList<ParkingReport> reports) {
-        String qry = "INSERT INTO Reports (Report_Type, Generated_Date, Report_Data) VALUES (?, NOW(), ?)";
+        String qry = "INSERT INTO reports (Report_Type, Generated_Date, Report_Data) VALUES (?, NOW(), ?)";
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             for (ParkingReport report : reports) {
@@ -348,7 +371,12 @@ public class ReportController {
     public ArrayList<ParkingReport> getHistoricalReports(String reportType, LocalDate fromDate, LocalDate toDate) {
         ArrayList<ParkingReport> reports = new ArrayList<>();
         
-        String qry = "SELECT * FROM Reports WHERE Report_Type = ? AND DATE(Generated_Date) BETWEEN ? AND ? ORDER BY Generated_Date DESC";
+        String qry = """
+            SELECT * FROM reports 
+            WHERE Report_Type = ? 
+            AND DATE(Generated_Date) BETWEEN ? AND ? 
+            ORDER BY Generated_Date DESC
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             stmt.setString(1, reportType);
@@ -361,7 +389,10 @@ public class ReportController {
                     // For now, we'll create a basic report object
                     ParkingReport report = new ParkingReport();
                     report.setReportType(rs.getString("Report_Type"));
-                    report.setReportDate(rs.getDate("Generated_Date").toLocalDate());
+                    Timestamp genDate = rs.getTimestamp("Generated_Date");
+                    if (genDate != null) {
+                        report.setReportDate(genDate.toLocalDateTime().toLocalDate());
+                    }
                     reports.add(report);
                 }
             }
@@ -382,8 +413,9 @@ public class ReportController {
             SELECT 
                 HOUR(Actual_start_time) as entry_hour,
                 COUNT(*) as entry_count
-            FROM ParkingInfo 
-            WHERE Date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            FROM parkinginfo 
+            WHERE Date_Of_Placing_Order >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+            AND Actual_start_time IS NOT NULL
             GROUP BY HOUR(Actual_start_time)
             ORDER BY entry_count DESC
             LIMIT 5
@@ -412,20 +444,22 @@ public class ReportController {
         
         String qry = """
             SELECT 
-                Date,
+                DATE(Date_Of_Placing_Order) as order_date,
                 COUNT(*) as daily_entries,
-                SUM(IsLate) as daily_late_exits,
+                SUM(CASE WHEN IsLate = 'yes' THEN 1 ELSE 0 END) as daily_late_exits,
                 AVG(TIMESTAMPDIFF(MINUTE, Actual_start_time, COALESCE(Actual_end_time, NOW()))) as avg_daily_duration
-            FROM ParkingInfo 
-            WHERE YEAR(Date) = YEAR(CURDATE()) AND MONTH(Date) = MONTH(CURDATE())
-            GROUP BY Date
-            ORDER BY Date DESC
+            FROM parkinginfo 
+            WHERE YEAR(Date_Of_Placing_Order) = YEAR(CURDATE()) 
+            AND MONTH(Date_Of_Placing_Order) = MONTH(CURDATE())
+            AND statusEnum IN ('active', 'finished')
+            GROUP BY DATE(Date_Of_Placing_Order)
+            ORDER BY order_date DESC
             """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
-                    String date = rs.getDate("Date").toString();
+                    String date = rs.getDate("order_date").toString();
                     int entries = rs.getInt("daily_entries");
                     int lateExits = rs.getInt("daily_late_exits");
                     double avgDuration = rs.getDouble("avg_daily_duration");

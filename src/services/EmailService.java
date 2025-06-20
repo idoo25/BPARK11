@@ -16,6 +16,7 @@ import javax.mail.internet.MimeMessage;
 /**
  * EmailService for BPark System - Hebrew Only Handles all email notifications
  * for the parking system
+ * Updated to include User_ID in registration emails
  */
 public class EmailService {
     
@@ -75,8 +76,8 @@ public class EmailService {
         return sendNotification(NotificationType.LATE_PICKUP, recipientEmail, customerName);
     }
     
-    public static boolean sendRegistrationConfirmation(String recipientEmail, String customerName, String username) {
-        return sendNotification(NotificationType.REGISTRATION_CONFIRMATION, recipientEmail, customerName, username);
+    public static boolean sendRegistrationConfirmation(String recipientEmail, String customerName, String username, int userID) {
+        return sendNotification(NotificationType.REGISTRATION_CONFIRMATION, recipientEmail, customerName, username, userID);
     }
     
     public static boolean sendReservationConfirmation(String recipientEmail, String customerName, 
@@ -103,8 +104,8 @@ public class EmailService {
         return sendNotification(NotificationType.PARKING_EXPIRED, recipientEmail, customerName, spotNumber);
     }
     
-    public static boolean sendWelcomeMessage(String recipientEmail, String customerName, String username) {
-        return sendNotification(NotificationType.WELCOME_MESSAGE, recipientEmail, customerName, username);
+    public static boolean sendWelcomeMessage(String recipientEmail, String customerName, String username, int userID) {
+        return sendNotification(NotificationType.WELCOME_MESSAGE, recipientEmail, customerName, username, userID);
     }
     
     /**
@@ -143,7 +144,8 @@ public class EmailService {
                 
             case REGISTRATION_CONFIRMATION:
                 String username = (String) additionalData[0];
-                return createRegistrationContent(customerName, username, currentDate, currentTime);
+                Integer userID = (Integer) additionalData[1];
+                return createRegistrationContent(customerName, username, userID, currentDate, currentTime);
                 
             case RESERVATION_CONFIRMATION:
                 String reservationCode = (String) additionalData[0];
@@ -171,7 +173,8 @@ public class EmailService {
                 
             case WELCOME_MESSAGE:
                 String welcomeUsername = (String) additionalData[0];
-                return createWelcomeContent(customerName, welcomeUsername);
+                Integer welcomeUserID = (Integer) additionalData[1];
+                return createWelcomeContent(customerName, welcomeUsername, welcomeUserID);
                 
             default:
                 return createDefaultContent(customerName);
@@ -209,18 +212,19 @@ public class EmailService {
     }
     
     /**
-     * Create registration confirmation content
+     * Create registration confirmation content - UPDATED WITH USER_ID
      */
-    private static EmailContent createRegistrationContent(String customerName, String username, String date, String time) {
+    private static EmailContent createRegistrationContent(String customerName, String username, int userID, String date, String time) {
         String subject = "ברוכים הבאים ל-BPARK - רישום מוצלח!";
         String content = createEmailTemplate(customerName, date, time,
             "ברוכים הבאים ל-BPARK!",
-            "שלום " + customerName + ",",
+            "שלום " + customerName + " וברוכים הבאים!",
             "ברוכים הבאים למערכת החניון החכם BPARK!<br>" +
             "רישומך הושלם בהצלחה.<br><br>" +
+            "<strong>מספר מזהה הלקוח שלך הוא:</strong> " + userID + "<br>" +
             "<strong>שם המשתמש שלך:</strong> " + username + "<br><br>" +
             "כעת תוכל להזמין מקומות חניה, לנהל הזמנות ולקבל עדכונים בזמן אמת.",
-            "<strong>טיפ:</strong> שמור את שם המשתמש שלך במקום בטוח לכניסה מהירה למערכת.",
+            "<strong>טיפ:</strong> שמור את מספר המזהה ושם המשתמש שלך במקום בטוח לכניסה מהירה למערכת.",
             "#d4edda", "#28a745"
         );
         return new EmailContent(subject, content);
@@ -323,15 +327,16 @@ public class EmailService {
     }
     
     /**
-     * Create welcome message content
+     * Create welcome message content - UPDATED WITH USER_ID
      */
-    private static EmailContent createWelcomeContent(String customerName, String username) {
+    private static EmailContent createWelcomeContent(String customerName, String username, int userID) {
         String subject = "ברוכים הבאים ל-BPARK - מערכת חניון חכמה!";
         String content = createEmailTemplate(customerName, LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy")), 
             LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),
             "ברוכים הבאים ל-BPARK!",
             "שלום " + customerName + " וברוכים הבאים!",
             "אנחנו שמחים שהצטרפת למערכת החניון החכם שלנו.<br><br>" +
+            "<strong>מספר מזהה הלקוח שלך הוא:</strong> " + userID + "<br>" +
             "<strong>שם המשתמש שלך:</strong> " + username + "<br><br>" +
             "במערכת שלנו תוכל:<br>" +
             "• להזמין מקומות חניה מראש<br>" +

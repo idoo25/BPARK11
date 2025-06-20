@@ -1,32 +1,30 @@
 package controllers;
 
 import java.sql.Connection;
-import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Time;
-import java.time.LocalDate;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Random;
 
 import entities.ParkingOrder;
 import entities.ParkingSubscriber;
-import services.EmailService; // 🆕 ADD THIS IMPORT
+import services.EmailService;
 
 /**
  * Enhanced ParkingController with email notifications
- * Handles all database operations for the ParkB parking management system.
+ * Updated to work with unified parkinginfo table structure
  */
 public class ParkingController {
     protected Connection conn;
     public int successFlag;
     private static final int TOTAL_PARKING_SPOTS = 100;
     private static final double RESERVATION_THRESHOLD = 0.4;
+    
     /**
      * Role-based access control for all parking operations
      */
@@ -163,7 +161,7 @@ public class ParkingController {
         }
     }
 
-    // ========== ALL YOUR EXISTING METHODS ==========
+    // ========== ALL YOUR EXISTING METHODS UPDATED ==========
     
     public String checkLogin(String userName, String password) {
         String qry = "SELECT UserTypeEnum FROM users WHERE UserName = ?";
@@ -272,24 +270,22 @@ public class ParkingController {
             // Calculate end time (default 4 hours)
             LocalDateTime estimatedEndTime = reservationDateTime.plusHours(4);
 
-            // Create reservation with DATETIME
+            // Create reservation in parkinginfo table with statusEnum='preorder'
             String qry = """
-                INSERT INTO Reservations 
-                (User_ID, parking_ID, reservation_Date, reservation_start_time, reservation_end_time,
-                 Date_Of_Placing_Order, statusEnum, assigned_parking_spot_id) 
-                VALUES (?, ?, ?, ?, ?, NOW(), 'preorder', ?)
+                INSERT INTO parkinginfo 
+                (ParkingSpot_ID, User_ID, Date_Of_Placing_Order, Estimated_start_time, 
+                 Estimated_end_time, IsOrderedEnum, IsLate, IsExtended, statusEnum) 
+                VALUES (?, ?, NOW(), ?, ?, 'yes', 'no', 'no', 'preorder')
                 """;
             
             try (PreparedStatement stmt = conn.prepareStatement(qry, PreparedStatement.RETURN_GENERATED_KEYS)) {
-                stmt.setInt(1, userID);
-                stmt.setInt(2, parkingSpotID);
-                stmt.setDate(3, Date.valueOf(reservationDateTime.toLocalDate()));
-                stmt.setTime(4, Time.valueOf(reservationDateTime.toLocalTime()));
-                stmt.setTime(5, Time.valueOf(estimatedEndTime.toLocalTime()));
-                stmt.setInt(6, parkingSpotID);
+                stmt.setInt(1, parkingSpotID);
+                stmt.setInt(2, userID);
+                stmt.setTimestamp(3, Timestamp.valueOf(reservationDateTime));
+                stmt.setTimestamp(4, Timestamp.valueOf(estimatedEndTime));
                 stmt.executeUpdate();
                 
-                // Get the generated reservation code
+                // Get the generated ParkingInfo_ID (this is our reservation code)
                 try (ResultSet generatedKeys = stmt.getGeneratedKeys()) {
                     if (generatedKeys.next()) {
                         int reservationCode = generatedKeys.getInt(1);
@@ -367,32 +363,41 @@ public class ParkingController {
             return "No available parking spot found";
         }
 
-        // Generate unique parking code
-        int parkingCode = generateParkingCode();
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime estimatedEnd = now.plusHours(4); // Default 4 hours
 
-        // Create parking info record
-        String qry = "INSERT INTO ParkingInfo (ParkingSpot_ID, User_ID, Date, Code, Actual_start_time, Estimated_start_time, Estimated_end_time, IsOrderedEnum, IsLate, IsExtended) VALUES (?, ?, ?, ?, ?, ?, ?, 'not ordered', false, false)";
+        // Create parking info record for immediate parking
+        String qry = """
+            INSERT INTO parkinginfo 
+            (ParkingSpot_ID, User_ID, Date_Of_Placing_Order, Actual_start_time, 
+             Estimated_start_time, Estimated_end_time, IsOrderedEnum, IsLate, IsExtended, statusEnum) 
+            VALUES (?, ?, NOW(), ?, ?, ?, 'no', 'no', 'no', 'active')
+            """;
         
-        try (PreparedStatement stmt = conn.prepareStatement(qry)) {
+        try (PreparedStatement stmt = conn.prepareStatement(qry, PreparedStatement.RETURN_GENERATED_KEYS)) {
             stmt.setInt(1, spotID);
             stmt.setInt(2, userID);
-            stmt.setDate(3, Date.valueOf(now.toLocalDate()));
-            stmt.setInt(4, parkingCode);
-            stmt.setTime(5, Time.valueOf(now.toLocalTime()));
-            stmt.setTime(6, Time.valueOf(now.toLocalTime()));
-            stmt.setTime(7, Time.valueOf(estimatedEnd.toLocalTime()));
+            stmt.setTimestamp(3, Timestamp.valueOf(now));
+            stmt.setTimestamp(4, Timestamp.valueOf(now));
+            stmt.setTimestamp(5, Timestamp.valueOf(estimatedEnd));
             stmt.executeUpdate();
 
-            // Mark parking spot as occupied
-            updateParkingSpotStatus(spotID, true);
-            
-            return "Entry successful. Parking code: " + parkingCode + ". Spot: " + spotID;
+            // Get the generated ParkingInfo_ID (parking code)
+            try (ResultSet generatedKeys = stmt.getGeneratedKeys()) {
+                if (generatedKeys.next()) {
+                    int parkingCode = generatedKeys.getInt(1);
+                    
+                    // Mark parking spot as occupied
+                    updateParkingSpotStatus(spotID, true);
+                    
+                    return "Entry successful. Parking code: " + parkingCode + ". Spot: " + spotID;
+                }
+            }
         } catch (SQLException e) {
             System.out.println("Error handling entry: " + e.getMessage());
             return "Entry failed";
         }
+        return "Entry failed";
     }
 
     /**
@@ -400,20 +405,25 @@ public class ParkingController {
      */
     public String enterParkingWithReservation(int reservationCode) {
         // Check if reservation exists and is in preorder status
-        String checkQry = "SELECT r.*, u.User_ID FROM Reservations r JOIN users u ON r.User_ID = u.User_ID WHERE r.Reservation_code = ? AND r.statusEnum = 'preorder'";
+        String checkQry = """
+            SELECT pi.*, u.User_ID 
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            WHERE pi.ParkingInfo_ID = ? AND pi.statusEnum = 'preorder'
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(checkQry)) {
             stmt.setInt(1, reservationCode);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
-                    Date reservationDate = rs.getDate("reservation_Date");
+                    LocalDateTime estimatedStartTime = rs.getTimestamp("Estimated_start_time").toLocalDateTime();
                     int userID = rs.getInt("User_ID");
-                    int parkingSpotID = rs.getInt("assigned_parking_spot_id");
+                    int parkingSpotID = rs.getInt("ParkingSpot_ID");
                     
                     // Check if reservation is for today
-                    LocalDate today = LocalDate.now();
-                    if (!reservationDate.toLocalDate().equals(today)) {
-                        if (reservationDate.toLocalDate().isBefore(today)) {
+                    LocalDateTime now = LocalDateTime.now();
+                    if (!estimatedStartTime.toLocalDate().equals(now.toLocalDate())) {
+                        if (estimatedStartTime.isBefore(now)) {
                             // Cancel expired reservation
                             cancelReservation(reservationCode);
                             return "Reservation expired";
@@ -422,39 +432,23 @@ public class ParkingController {
                         }
                     }
 
-                    // Check if spot is still available
-                    if (!isParkingSpotAvailable(parkingSpotID)) {
-                        // Find another available spot
-                        parkingSpotID = getAvailableParkingSpotID();
-                        if (parkingSpotID == -1) {
-                            return "No available parking spots found";
-                        }
-                    }
-
-                    // Generate parking code
-                    int parkingCode = generateParkingCode();
-                    LocalDateTime now = LocalDateTime.now();
-                    LocalDateTime estimatedEnd = now.plusHours(4);
-
-                    // Create parking info record
-                    String insertQry = "INSERT INTO ParkingInfo (ParkingSpot_ID, User_ID, Date, Code, Actual_start_time, Estimated_start_time, Estimated_end_time, IsOrderedEnum, IsLate, IsExtended) VALUES (?, ?, ?, ?, ?, ?, ?, 'ordered', false, false)";
+                    // Update reservation to active status and set actual start time
+                    String updateQry = """
+                        UPDATE parkinginfo 
+                        SET statusEnum = 'active', Actual_start_time = ? 
+                        WHERE ParkingInfo_ID = ?
+                        """;
                     
-                    try (PreparedStatement insertStmt = conn.prepareStatement(insertQry)) {
-                        insertStmt.setInt(1, parkingSpotID);
-                        insertStmt.setInt(2, userID);
-                        insertStmt.setDate(3, Date.valueOf(now.toLocalDate()));
-                        insertStmt.setInt(4, parkingCode);
-                        insertStmt.setTime(5, Time.valueOf(now.toLocalTime()));
-                        insertStmt.setTime(6, Time.valueOf(now.toLocalTime()));
-                        insertStmt.setTime(7, Time.valueOf(estimatedEnd.toLocalTime()));
-                        insertStmt.executeUpdate();
-
-                        // Mark parking spot as occupied and change reservation to active
+                    try (PreparedStatement updateStmt = conn.prepareStatement(updateQry)) {
+                        updateStmt.setTimestamp(1, Timestamp.valueOf(now));
+                        updateStmt.setInt(2, reservationCode);
+                        updateStmt.executeUpdate();
+                        
+                        // Mark parking spot as occupied
                         updateParkingSpotStatus(parkingSpotID, true);
-                        updateReservationStatus(reservationCode, "active");
                         
                         System.out.println("Reservation " + reservationCode + " activated (preorder → active)");
-                        return "Entry successful! Reservation activated. Parking code: " + parkingCode + ". Spot: " + parkingSpotID;
+                        return "Entry successful! Reservation activated. Parking code: " + reservationCode + ". Spot: " + parkingSpotID;
                     }
                 }
             }
@@ -476,6 +470,15 @@ public class ParkingController {
         }
         
         // Continue with existing registration logic
+        return registerNewSubscriberInternal(name, phone, email, carNumber, userName);
+    }
+    
+    /**
+     * For backwards compatibility - allow registration without attendant check
+     * This can be used by system initialization or admin functions
+     */
+    public String registerNewSubscriber(String name, String phone, String email, 
+                                       String carNumber, String userName) {
         return registerNewSubscriberInternal(name, phone, email, carNumber, userName);
     }
     
@@ -515,7 +518,7 @@ public class ParkingController {
         // Insert new subscriber
         String insertQry = "INSERT INTO users (UserName, Name, Phone, Email, CarNum, UserTypeEnum) VALUES (?, ?, ?, ?, ?, 'sub')";
         
-        try (PreparedStatement stmt = conn.prepareStatement(insertQry)) {
+        try (PreparedStatement stmt = conn.prepareStatement(insertQry, PreparedStatement.RETURN_GENERATED_KEYS)) {
             stmt.setString(1, userName);
             stmt.setString(2, name);
             stmt.setString(3, phone);
@@ -524,13 +527,21 @@ public class ParkingController {
             
             int rowsInserted = stmt.executeUpdate();
             if (rowsInserted > 0) {
-                System.out.println("New subscriber registered: " + userName);
+                // Get the generated User_ID
+                int userID = -1;
+                try (ResultSet generatedKeys = stmt.getGeneratedKeys()) {
+                    if (generatedKeys.next()) {
+                        userID = generatedKeys.getInt(1);
+                    }
+                }
                 
-                // 🆕 SEND EMAIL NOTIFICATIONS
-                EmailService.sendRegistrationConfirmation(email, name, userName);
-                EmailService.sendWelcomeMessage(email, name, userName);
+                System.out.println("New subscriber registered: " + userName + " with User_ID: " + userID);
                 
-                return "SUCCESS:Subscriber registered successfully. Username: " + userName;
+                // SEND EMAIL NOTIFICATIONS with User_ID
+                EmailService.sendRegistrationConfirmation(email, name, userName, userID);
+                EmailService.sendWelcomeMessage(email, name, userName, userID);
+                
+                return "SUCCESS:Subscriber registered successfully. Username: " + userName + ", User ID: " + userID;
             }
         } catch (SQLException e) {
             System.out.println("Registration failed: " + e.getMessage());
@@ -570,7 +581,12 @@ public class ParkingController {
     public String exitParking(String parkingCodeStr) {
         try {
             int parkingCode = Integer.parseInt(parkingCodeStr);
-            String qry = "SELECT pi.*, ps.ParkingSpot_ID FROM ParkingInfo pi JOIN ParkingSpot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID WHERE pi.Code = ? AND pi.Actual_end_time IS NULL";
+            String qry = """
+                SELECT pi.*, ps.ParkingSpot_ID 
+                FROM parkinginfo pi 
+                JOIN parkingspot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID 
+                WHERE pi.ParkingInfo_ID = ? AND pi.statusEnum = 'active'
+                """;
             
             try (PreparedStatement stmt = conn.prepareStatement(qry)) {
                 stmt.setInt(1, parkingCode);
@@ -578,32 +594,31 @@ public class ParkingController {
                     if (rs.next()) {
                         int parkingInfoID = rs.getInt("ParkingInfo_ID");
                         int spotID = rs.getInt("ParkingSpot_ID");
-                        Time estimatedEndTime = rs.getTime("Estimated_end_time");
+                        Timestamp estimatedEndTime = rs.getTimestamp("Estimated_end_time");
                         int userID = rs.getInt("User_ID");
                         String orderType = rs.getString("IsOrderedEnum");
                         
-                        LocalTime now = LocalTime.now();
-                        LocalTime estimatedEnd = estimatedEndTime.toLocalTime();
+                        LocalDateTime now = LocalDateTime.now();
+                        LocalDateTime estimatedEnd = estimatedEndTime.toLocalDateTime();
                         
                         // Check if parking exceeded estimated time
                         boolean isLate = now.isAfter(estimatedEnd);
                         
-                        // Update parking info with exit time
-                        String updateQry = "UPDATE ParkingInfo SET Actual_end_time = ?, IsLate = ? WHERE ParkingInfo_ID = ?";
+                        // Update parking info with exit time and finish status
+                        String updateQry = """
+                            UPDATE parkinginfo 
+                            SET Actual_end_time = ?, IsLate = ?, statusEnum = 'finished' 
+                            WHERE ParkingInfo_ID = ?
+                            """;
                         
                         try (PreparedStatement updateStmt = conn.prepareStatement(updateQry)) {
-                            updateStmt.setTime(1, Time.valueOf(now));
-                            updateStmt.setBoolean(2, isLate);
+                            updateStmt.setTimestamp(1, Timestamp.valueOf(now));
+                            updateStmt.setString(2, isLate ? "yes" : "no");
                             updateStmt.setInt(3, parkingInfoID);
                             updateStmt.executeUpdate();
                             
                             // Free the parking spot
                             updateParkingSpotStatus(spotID, false);
-                            
-                            // If this was from a reservation, finish the reservation
-                            if ("ordered".equals(orderType)) {
-                                finishReservationBySpotAndUser(spotID, userID);
-                            }
                             
                             if (isLate) {
                                 sendLateExitNotification(userID);
@@ -624,7 +639,7 @@ public class ParkingController {
     }
 
     /**
-     * Extends parking time - 🔧 FIXED COMPILATION ERRORS
+     * Extends parking time
      */
     public String extendParkingTime(String parkingCodeStr, int additionalHours) {
         if (additionalHours < 1 || additionalHours > 4) {
@@ -634,27 +649,36 @@ public class ParkingController {
         try {
             int parkingCode = Integer.parseInt(parkingCodeStr);
             
-            // 🔧 FIXED: Get user info for email notification
-            String getUserQry = "SELECT pi.*, u.Email, u.Name FROM ParkingInfo pi JOIN users u ON pi.User_ID = u.User_ID WHERE pi.Code = ? AND pi.Actual_end_time IS NULL";
+            // Get user info for email notification
+            String getUserQry = """
+                SELECT pi.*, u.Email, u.Name 
+                FROM parkinginfo pi 
+                JOIN users u ON pi.User_ID = u.User_ID 
+                WHERE pi.ParkingInfo_ID = ? AND pi.statusEnum = 'active'
+                """;
             
             try (PreparedStatement stmt = conn.prepareStatement(getUserQry)) {
                 stmt.setInt(1, parkingCode);
                 try (ResultSet rs = stmt.executeQuery()) {
                     if (rs.next()) {
-                        Time currentEstimatedEnd = rs.getTime("Estimated_end_time");
+                        Timestamp currentEstimatedEnd = rs.getTimestamp("Estimated_end_time");
                         String userEmail = rs.getString("Email");
                         String userName = rs.getString("Name");
                         
-                        LocalTime newEstimatedEnd = currentEstimatedEnd.toLocalTime().plusHours(additionalHours);
+                        LocalDateTime newEstimatedEnd = currentEstimatedEnd.toLocalDateTime().plusHours(additionalHours);
                         
-                        String updateQry = "UPDATE ParkingInfo SET Estimated_end_time = ?, IsExtended = true WHERE Code = ?";
+                        String updateQry = """
+                            UPDATE parkinginfo 
+                            SET Estimated_end_time = ?, IsExtended = 'yes' 
+                            WHERE ParkingInfo_ID = ?
+                            """;
                         
                         try (PreparedStatement updateStmt = conn.prepareStatement(updateQry)) {
-                            updateStmt.setTime(1, Time.valueOf(newEstimatedEnd));
+                            updateStmt.setTimestamp(1, Timestamp.valueOf(newEstimatedEnd));
                             updateStmt.setInt(2, parkingCode);
                             updateStmt.executeUpdate();
                             
-                            // 🆕 SEND EMAIL NOTIFICATION
+                            // SEND EMAIL NOTIFICATION
                             if (userEmail != null && userName != null) {
                                 EmailService.sendExtensionConfirmation(
                                     userEmail, userName, parkingCodeStr, 
@@ -676,21 +700,26 @@ public class ParkingController {
     }
 
     /**
-     * Sends lost parking code to user - 🔧 FIXED COMPILATION ERRORS
+     * Sends lost parking code to user
      */
     public String sendLostParkingCode(String userName) {
-        String qry = "SELECT pi.Code, u.Email, u.Phone, u.Name FROM ParkingInfo pi JOIN users u ON pi.User_ID = u.User_ID WHERE u.UserName = ? AND pi.Actual_end_time IS NULL";
+        String qry = """
+            SELECT pi.ParkingInfo_ID, u.Email, u.Phone, u.Name 
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            WHERE u.UserName = ? AND pi.statusEnum = 'active'
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             stmt.setString(1, userName);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
-                    int parkingCode = rs.getInt("Code");
+                    int parkingCode = rs.getInt("ParkingInfo_ID");
                     String email = rs.getString("Email");
                     String phone = rs.getString("Phone");
-                    String name = rs.getString("Name"); // 🔧 FIXED: Now getting name from query
+                    String name = rs.getString("Name");
                     
-                    // 🆕 SEND EMAIL NOTIFICATION
+                    // SEND EMAIL NOTIFICATION
                     EmailService.sendParkingCodeRecovery(email, name, String.valueOf(parkingCode));
                     
                     return String.valueOf(parkingCode);
@@ -707,7 +736,14 @@ public class ParkingController {
      */
     public ArrayList<ParkingOrder> getParkingHistory(String userName) {
         ArrayList<ParkingOrder> history = new ArrayList<>();
-        String qry = "SELECT pi.*, ps.ParkingSpot_ID FROM ParkingInfo pi JOIN users u ON pi.User_ID = u.User_ID JOIN ParkingSpot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID WHERE u.UserName = ? ORDER BY pi.Date DESC, pi.Actual_start_time DESC";
+        String qry = """
+            SELECT pi.*, ps.ParkingSpot_ID 
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            JOIN parkingspot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID 
+            WHERE u.UserName = ? 
+            ORDER BY pi.Date_Of_Placing_Order DESC
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             stmt.setString(1, userName);
@@ -715,29 +751,28 @@ public class ParkingController {
                 while (rs.next()) {
                     ParkingOrder order = new ParkingOrder();
                     order.setOrderID(rs.getInt("ParkingInfo_ID"));
-                    order.setParkingCode(String.valueOf(rs.getInt("Code")));
+                    order.setParkingCode(String.valueOf(rs.getInt("ParkingInfo_ID")));
                     order.setOrderType(rs.getString("IsOrderedEnum"));
                     order.setSpotNumber("Spot " + rs.getInt("ParkingSpot_ID"));
                     
-                    // Convert SQL Date and Time to LocalDateTime
-                    Date date = rs.getDate("Date");
-                    Time startTime = rs.getTime("Actual_start_time");
-                    Time endTime = rs.getTime("Actual_end_time");
-                    Time estimatedEnd = rs.getTime("Estimated_end_time");
+                    // Convert Timestamps to LocalDateTime
+                    Timestamp actualStart = rs.getTimestamp("Actual_start_time");
+                    Timestamp actualEnd = rs.getTimestamp("Actual_end_time");
+                    Timestamp estimatedEnd = rs.getTimestamp("Estimated_end_time");
                     
-                    if (date != null && startTime != null) {
-                        order.setEntryTime(LocalDateTime.of(date.toLocalDate(), startTime.toLocalTime()));
+                    if (actualStart != null) {
+                        order.setEntryTime(actualStart.toLocalDateTime());
                     }
-                    if (date != null && endTime != null) {
-                        order.setExitTime(LocalDateTime.of(date.toLocalDate(), endTime.toLocalTime()));
+                    if (actualEnd != null) {
+                        order.setExitTime(actualEnd.toLocalDateTime());
                     }
-                    if (date != null && estimatedEnd != null) {
-                        order.setExpectedExitTime(LocalDateTime.of(date.toLocalDate(), estimatedEnd.toLocalTime()));
+                    if (estimatedEnd != null) {
+                        order.setExpectedExitTime(estimatedEnd.toLocalDateTime());
                     }
                     
-                    order.setLate(rs.getBoolean("IsLate"));
-                    order.setExtended(rs.getBoolean("IsExtended"));
-                    order.setStatus(endTime != null ? "Completed" : "Active");
+                    order.setLate("yes".equals(rs.getString("IsLate")));
+                    order.setExtended("yes".equals(rs.getString("IsExtended")));
+                    order.setStatus(rs.getString("statusEnum"));
                     
                     history.add(order);
                 }
@@ -753,31 +788,37 @@ public class ParkingController {
      */
     public ArrayList<ParkingOrder> getActiveParkings() {
         ArrayList<ParkingOrder> activeParkings = new ArrayList<>();
-        String qry = "SELECT pi.*, u.Name, ps.ParkingSpot_ID FROM ParkingInfo pi JOIN users u ON pi.User_ID = u.User_ID JOIN ParkingSpot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID WHERE pi.Actual_end_time IS NULL ORDER BY pi.Actual_start_time";
+        String qry = """
+            SELECT pi.*, u.Name, ps.ParkingSpot_ID 
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            JOIN parkingspot ps ON pi.ParkingSpot_ID = ps.ParkingSpot_ID 
+            WHERE pi.statusEnum = 'active' 
+            ORDER BY pi.Actual_start_time
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     ParkingOrder order = new ParkingOrder();
                     order.setOrderID(rs.getInt("ParkingInfo_ID"));
-                    order.setParkingCode(String.valueOf(rs.getInt("Code")));
+                    order.setParkingCode(String.valueOf(rs.getInt("ParkingInfo_ID")));
                     order.setOrderType(rs.getString("IsOrderedEnum"));
                     order.setSubscriberName(rs.getString("Name"));
                     order.setSpotNumber("Spot " + rs.getInt("ParkingSpot_ID"));
                     
-                    // Convert SQL Date and Time to LocalDateTime
-                    Date date = rs.getDate("Date");
-                    Time startTime = rs.getTime("Actual_start_time");
-                    Time estimatedEnd = rs.getTime("Estimated_end_time");
+                    // Convert Timestamps to LocalDateTime
+                    Timestamp actualStart = rs.getTimestamp("Actual_start_time");
+                    Timestamp estimatedEnd = rs.getTimestamp("Estimated_end_time");
                     
-                    if (date != null && startTime != null) {
-                        order.setEntryTime(LocalDateTime.of(date.toLocalDate(), startTime.toLocalTime()));
+                    if (actualStart != null) {
+                        order.setEntryTime(actualStart.toLocalDateTime());
                     }
-                    if (date != null && estimatedEnd != null) {
-                        order.setExpectedExitTime(LocalDateTime.of(date.toLocalDate(), estimatedEnd.toLocalTime()));
+                    if (estimatedEnd != null) {
+                        order.setExpectedExitTime(estimatedEnd.toLocalDateTime());
                     }
                     
-                    order.setStatus("Active");
+                    order.setStatus("active");
                     activeParkings.add(order);
                 }
             }
@@ -819,11 +860,16 @@ public class ParkingController {
     }
 
     /**
-     * Cancels a reservation - 🔧 FIXED COMPILATION ERRORS
+     * Cancels a reservation
      */
     public String cancelReservation(int reservationCode) {
-        // 🔧 FIXED: Get user info before cancelling for email notification
-        String getUserQry = "SELECT u.Email, u.Name FROM Reservations r JOIN users u ON r.User_ID = u.User_ID WHERE r.Reservation_code = ?";
+        // Get user info before cancelling for email notification
+        String getUserQry = """
+            SELECT u.Email, u.Name 
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            WHERE pi.ParkingInfo_ID = ?
+            """;
         String userEmail = null;
         String userName = null;
         
@@ -839,7 +885,11 @@ public class ParkingController {
             System.out.println("Error getting user info for cancellation: " + e.getMessage());
         }
         
-        String qry = "UPDATE Reservations SET statusEnum = 'cancelled' WHERE Reservation_code = ? AND statusEnum IN ('preorder', 'active')";
+        String qry = """
+            UPDATE parkinginfo 
+            SET statusEnum = 'cancelled' 
+            WHERE ParkingInfo_ID = ? AND statusEnum IN ('preorder', 'active')
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             stmt.setInt(1, reservationCode);
@@ -849,7 +899,7 @@ public class ParkingController {
                 // Also free up the spot if it was assigned
                 freeSpotForReservation(reservationCode);
                 
-                // 🆕 SEND EMAIL NOTIFICATION
+                // SEND EMAIL NOTIFICATION
                 if (userEmail != null && userName != null) {
                     EmailService.sendReservationCancelled(userEmail, userName, String.valueOf(reservationCode));
                 }
@@ -899,11 +949,6 @@ public class ParkingController {
 
     // ========== HELPER METHODS ==========
     
-    private int generateParkingCode() {
-        Random random = new Random();
-        return 100000 + random.nextInt(900000);
-    }
-
     private int getUserID(String userName) {
         String qry = "SELECT User_ID FROM users WHERE UserName = ?";
         
@@ -963,20 +1008,8 @@ public class ParkingController {
         }
     }
 
-    private void updateReservationStatus(int reservationCode, String status) {
-        String qry = "UPDATE Reservations SET statusEnum = ? WHERE Reservation_code = ?";
-        
-        try (PreparedStatement stmt = conn.prepareStatement(qry)) {
-            stmt.setString(1, status);
-            stmt.setInt(2, reservationCode);
-            stmt.executeUpdate();
-        } catch (SQLException e) {
-            System.out.println("Error updating reservation status: " + e.getMessage());
-        }
-    }
-
     /**
-     * Send late exit notification - 🔧 FIXED: Now uses EmailService
+     * Send late exit notification
      */
     private void sendLateExitNotification(int userID) {
         String qry = "SELECT Email, Phone, Name FROM users WHERE User_ID = ?";
@@ -989,7 +1022,7 @@ public class ParkingController {
                     String phone = rs.getString("Phone");
                     String name = rs.getString("Name");
                     
-                    // 🆕 SEND EMAIL NOTIFICATION
+                    // SEND EMAIL NOTIFICATION
                     EmailService.sendLatePickupNotification(email, name);
                 }
             }
@@ -1015,35 +1048,12 @@ public class ParkingController {
         return false;
     }
     
-    private void finishReservationBySpotAndUser(int spotID, int userID) {
-        String query = """
-            UPDATE Reservations 
-            SET statusEnum = 'finished'
-            WHERE User_ID = ? AND assigned_parking_spot_id = ? AND statusEnum = 'active'
-            """;
-        
-        try (PreparedStatement stmt = conn.prepareStatement(query)) {
-            stmt.setInt(1, userID);
-            stmt.setInt(2, spotID);
-            int updated = stmt.executeUpdate();
-            
-            if (updated > 0) {
-                System.out.println("Reservation finished for user " + userID + " at spot " + spotID);
-            }
-        } catch (SQLException e) {
-            System.out.println("Error finishing reservation: " + e.getMessage());
-        }
-    }
-    
     private void freeSpotForReservation(int reservationCode) {
         String query = """
-            UPDATE ParkingSpot ps
+            UPDATE parkingspot ps
+            JOIN parkinginfo pi ON ps.ParkingSpot_ID = pi.ParkingSpot_ID
             SET ps.isOccupied = FALSE
-            WHERE ps.ParkingSpot_ID = (
-                SELECT r.assigned_parking_spot_id 
-                FROM Reservations r 
-                WHERE r.Reservation_code = ?
-            )
+            WHERE pi.ParkingInfo_ID = ?
             """;
         
         try (PreparedStatement stmt = conn.prepareStatement(query)) {
@@ -1053,19 +1063,18 @@ public class ParkingController {
             System.out.println("Error freeing spot for reservation: " + e.getMessage());
         }
     }
+
     /**
      * Activate reservation when customer arrives (PREORDER → ACTIVE)
      */
     public String activateReservation(String subscriberUserName, int reservationCode) {
         // Check if reservation exists and is in preorder status
         String checkQry = """
-            SELECT r.*, u.UserName, r.assigned_parking_spot_id,
-                   TIMESTAMPDIFF(MINUTE, 
-                       CONCAT(r.reservation_Date, ' ', r.reservation_start_time), 
-                       NOW()) as minutes_since_start
-            FROM Reservations r 
-            JOIN users u ON r.User_ID = u.User_ID 
-            WHERE r.Reservation_code = ? AND r.statusEnum = 'preorder'
+            SELECT pi.*, u.UserName,
+                   TIMESTAMPDIFF(MINUTE, pi.Estimated_start_time, NOW()) as minutes_since_start
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            WHERE pi.ParkingInfo_ID = ? AND pi.statusEnum = 'preorder'
             """;
         
         try (PreparedStatement stmt = conn.prepareStatement(checkQry)) {
@@ -1074,7 +1083,7 @@ public class ParkingController {
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
                     int minutesSinceStart = rs.getInt("minutes_since_start");
-                    int spotId = rs.getInt("assigned_parking_spot_id");
+                    int spotId = rs.getInt("ParkingSpot_ID");
                     
                     // Check if within 15-minute grace period
                     if (minutesSinceStart > 15) {
@@ -1083,32 +1092,21 @@ public class ParkingController {
                         return "Reservation cancelled due to late arrival (over 15 minutes). Please make a new reservation.";
                     }
                     
-                    // Generate parking code and create parking session
-                    int parkingCode = generateParkingCode();
+                    // Update reservation status to ACTIVE and set actual start time
                     LocalDateTime now = LocalDateTime.now();
-                    LocalDateTime estimatedEnd = now.plusHours(4); // Default 4 hours
-                    
-                    // Create parking info record
-                    String insertQry = """
-                        INSERT INTO ParkingInfo 
-                        (ParkingSpot_ID, User_ID, Date, Code, Actual_start_time, Estimated_start_time, 
-                         Estimated_end_time, IsOrderedEnum, IsLate, IsExtended) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'ordered', ?, false)
+                    String updateQry = """
+                        UPDATE parkinginfo 
+                        SET statusEnum = 'active', 
+                            Actual_start_time = ?, 
+                            IsLate = ?
+                        WHERE ParkingInfo_ID = ?
                         """;
                     
-                    try (PreparedStatement insertStmt = conn.prepareStatement(insertQry)) {
-                        insertStmt.setInt(1, spotId);
-                        insertStmt.setInt(2, rs.getInt("User_ID"));
-                        insertStmt.setDate(3, Date.valueOf(now.toLocalDate()));
-                        insertStmt.setInt(4, parkingCode);
-                        insertStmt.setTime(5, Time.valueOf(now.toLocalTime()));
-                        insertStmt.setTime(6, Time.valueOf(now.toLocalTime()));
-                        insertStmt.setTime(7, Time.valueOf(estimatedEnd.toLocalTime()));
-                        insertStmt.setBoolean(8, minutesSinceStart > 0); // Mark as late if any delay
-                        insertStmt.executeUpdate();
-                        
-                        // Update reservation status to ACTIVE
-                        updateReservationStatus(reservationCode, "active");
+                    try (PreparedStatement updateStmt = conn.prepareStatement(updateQry)) {
+                        updateStmt.setTimestamp(1, Timestamp.valueOf(now));
+                        updateStmt.setString(2, minutesSinceStart > 0 ? "yes" : "no");
+                        updateStmt.setInt(3, reservationCode);
+                        updateStmt.executeUpdate();
                         
                         // Mark parking spot as occupied
                         updateParkingSpotStatus(spotId, true);
@@ -1118,7 +1116,7 @@ public class ParkingController {
                         
                         System.out.println("Reservation " + reservationCode + " activated (preorder → active)" + lateMessage);
                         
-                        return "Reservation activated! Parking code: " + parkingCode + 
+                        return "Reservation activated! Parking code: " + reservationCode + 
                                ". Spot: " + spotId + lateMessage;
                     }
                 }
@@ -1144,10 +1142,10 @@ public class ParkingController {
     private String cancelReservationInternal(int reservationCode, String reason) {
         // Get reservation info first for email notification
         String getUserQry = """
-            SELECT u.Email, u.Name, r.statusEnum, r.assigned_parking_spot_id
-            FROM Reservations r 
-            JOIN users u ON r.User_ID = u.User_ID 
-            WHERE r.Reservation_code = ?
+            SELECT u.Email, u.Name, pi.statusEnum, pi.ParkingSpot_ID
+            FROM parkinginfo pi 
+            JOIN users u ON pi.User_ID = u.User_ID 
+            WHERE pi.ParkingInfo_ID = ?
             """;
         
         String userEmail = null;
@@ -1162,7 +1160,7 @@ public class ParkingController {
                     userEmail = rs.getString("Email");
                     userName = rs.getString("Name");
                     currentStatus = rs.getString("statusEnum");
-                    spotId = rs.getObject("assigned_parking_spot_id", Integer.class);
+                    spotId = rs.getObject("ParkingSpot_ID", Integer.class);
                 }
             }
         } catch (SQLException e) {
@@ -1170,7 +1168,11 @@ public class ParkingController {
         }
         
         // Update reservation status to cancelled
-        String qry = "UPDATE Reservations SET statusEnum = 'cancelled' WHERE Reservation_code = ? AND statusEnum IN ('preorder', 'active')";
+        String qry = """
+            UPDATE parkinginfo 
+            SET statusEnum = 'cancelled' 
+            WHERE ParkingInfo_ID = ? AND statusEnum IN ('preorder', 'active')
+            """;
         
         try (PreparedStatement stmt = conn.prepareStatement(qry)) {
             stmt.setInt(1, reservationCode);
@@ -1196,9 +1198,4 @@ public class ParkingController {
         
         return "Reservation not found or already cancelled/finished";
     }
-
-    /**
-     * Update reservation status helper method
-     */
-    
 }

@@ -10,13 +10,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import services.EmailService; // 🆕 ADD THIS IMPORT
+import services.EmailService;
 
 /**
  * Simplified Automatic Reservation Cancellation Service
  * 15-minute rule: If a customer with "preorder" status is late by more than 15 minutes,
  * their reservation is automatically cancelled and the spot becomes available.
- * NOW INCLUDES EMAIL NOTIFICATIONS
+ * Updated to work with unified parkinginfo table structure
  */
 public class SimpleAutoCancellationService {
     
@@ -69,32 +69,28 @@ public class SimpleAutoCancellationService {
     
     /**
      * Main method that checks for and cancels late preorder reservations
-     * 🆕 NOW WITH EMAIL NOTIFICATIONS
+     * NOW WITH EMAIL NOTIFICATIONS
      */
     private void checkAndCancelLatePreorders() {
-    	String query = """
-    		    SELECT 
-    		        r.Reservation_code,
-    		        r.User_ID,
-    		        r.assigned_parking_spot_id,
-    		        u.UserName,
-    		        u.Email,
-    		        u.Name,
-    		        u.Phone,
-    		        TIMESTAMPDIFF(MINUTE, 
-    		            CONCAT(r.reservation_Date, ' ', r.reservation_start_time), 
-    		            NOW()) as minutes_late,
-    		        CONCAT(r.reservation_Date, ' ', r.reservation_start_time) as full_reservation_time
-    		    FROM Reservations r
-    		    JOIN users u ON r.User_ID = u.User_ID
-    		    WHERE r.statusEnum = 'preorder'
-    		    AND r.reservation_Date = CURDATE()
-    		    AND r.assigned_parking_spot_id IS NOT NULL
-    		    AND r.reservation_start_time IS NOT NULL
-    		    AND TIMESTAMPDIFF(MINUTE, 
-    		        CONCAT(r.reservation_Date, ' ', r.reservation_start_time), 
-    		        NOW()) >= ?
-    		    """;
+        String query = """
+            SELECT 
+                pi.ParkingInfo_ID,
+                pi.User_ID,
+                pi.ParkingSpot_ID,
+                u.UserName,
+                u.Email,
+                u.Name,
+                u.Phone,
+                TIMESTAMPDIFF(MINUTE, pi.Estimated_start_time, NOW()) as minutes_late,
+                pi.Estimated_start_time
+            FROM parkinginfo pi
+            JOIN users u ON pi.User_ID = u.User_ID
+            WHERE pi.statusEnum = 'preorder'
+            AND DATE(pi.Estimated_start_time) = CURDATE()
+            AND pi.ParkingSpot_ID IS NOT NULL
+            AND pi.Estimated_start_time IS NOT NULL
+            AND TIMESTAMPDIFF(MINUTE, pi.Estimated_start_time, NOW()) >= ?
+            """;
         
         try (PreparedStatement stmt = parkingController.getConnection().prepareStatement(query)) {
             stmt.setInt(1, LATE_THRESHOLD_MINUTES);
@@ -103,8 +99,8 @@ public class SimpleAutoCancellationService {
                 int cancelledCount = 0;
                 
                 while (rs.next()) {
-                    int reservationCode = rs.getInt("Reservation_code");
-                    int spotId = rs.getInt("assigned_parking_spot_id");
+                    int reservationCode = rs.getInt("ParkingInfo_ID");
+                    int spotId = rs.getInt("ParkingSpot_ID");
                     String userName = rs.getString("UserName");
                     String userEmail = rs.getString("Email");
                     String fullName = rs.getString("Name");
@@ -113,7 +109,7 @@ public class SimpleAutoCancellationService {
                     if (cancelLateReservation(reservationCode, spotId)) {
                         cancelledCount++;
                         
-                        // 🆕 SEND EMAIL NOTIFICATION for auto-cancellation
+                        // SEND EMAIL NOTIFICATION for auto-cancellation
                         if (userEmail != null && fullName != null) {
                             EmailService.sendReservationCancelled(userEmail, fullName, String.valueOf(reservationCode));
                         }
@@ -148,9 +144,9 @@ public class SimpleAutoCancellationService {
             
             // 1. Cancel the reservation (change status from preorder to cancelled)
             String cancelQuery = """
-                UPDATE Reservations 
+                UPDATE parkinginfo 
                 SET statusEnum = 'cancelled'
-                WHERE Reservation_code = ? AND statusEnum = 'preorder'
+                WHERE ParkingInfo_ID = ? AND statusEnum = 'preorder'
                 """;
             
             int updatedReservations = 0;
@@ -166,7 +162,7 @@ public class SimpleAutoCancellationService {
             
             // 2. Free up the parking spot
             String freeSpotQuery = """
-                UPDATE ParkingSpot 
+                UPDATE parkingspot 
                 SET isOccupied = FALSE 
                 WHERE ParkingSpot_ID = ?
                 """;
@@ -201,9 +197,9 @@ public class SimpleAutoCancellationService {
      */
     public boolean activateReservation(int reservationCode) {
         String query = """
-            UPDATE Reservations 
-            SET statusEnum = 'active'
-            WHERE Reservation_code = ? AND statusEnum = 'preorder'
+            UPDATE parkinginfo 
+            SET statusEnum = 'active', Actual_start_time = NOW()
+            WHERE ParkingInfo_ID = ? AND statusEnum = 'preorder'
             """;
         
         try (PreparedStatement stmt = parkingController.getConnection().prepareStatement(query)) {
@@ -231,11 +227,11 @@ public class SimpleAutoCancellationService {
         try {
             conn.setAutoCommit(false);
             
-            // 1. Update reservation status to finished
+            // 1. Update reservation status to finished and set actual end time
             String finishQuery = """
-                UPDATE Reservations 
-                SET statusEnum = 'finished'
-                WHERE Reservation_code = ? AND statusEnum = 'active'
+                UPDATE parkinginfo 
+                SET statusEnum = 'finished', Actual_end_time = NOW()
+                WHERE ParkingInfo_ID = ? AND statusEnum = 'active'
                 """;
             
             int updated = 0;
@@ -251,7 +247,7 @@ public class SimpleAutoCancellationService {
             
             // 2. Free up the parking spot
             String freeSpotQuery = """
-                UPDATE ParkingSpot 
+                UPDATE parkingspot 
                 SET isOccupied = FALSE 
                 WHERE ParkingSpot_ID = ?
                 """;
